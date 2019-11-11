@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  S3LatestObjectVersion:
+    Description: S3 object version
+    Type: String
+  LambdaBucketNamePrefix:
+    Type: String
+    Description: Bucket name prefix
+
+Resources:
+  LoggingS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    DependsOn: CloudfrontKinesisLambdaInvokePermission
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketName: mybucket
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - Event: "s3:ObjectCreated:*"
+          Function: !GetAtt CloudfrontKinesisLambdaFunction.Arn
+          Filter:
+            S3Key:
+              Rules:
+              - Name: prefix
+                Value: cloudfront
+              - Name: suffix
+                Value: .gz
+    Metadata:
+      Comment: Bucket for storing logs produced throughout AWS
+
+  CloudfrontKinesisLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      MemorySize: 512
+      Code:
+        S3Bucket: !Sub ${LambdaBucketNamePrefix}
+        S3Key: cloudfront-kinesis-lambda.zip
+        S3ObjectVersion: !Ref S3LatestObjectVersion
+      Handler: cloudfront_kinesis_lambda.lambda_handler
+      Timeout: 600
+      Role: !GetAtt CloudfrontKinesisLambdaIAMRole.Arn
+      Runtime: python3.7
+
+  CloudfrontKinesisLambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref CloudfrontKinesisLambdaFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: "arn:aws:s3:::mybucket"
+      # When LambdaConfigurations are applied to a bucket, This permissions resource must already exist
+      # Therefore, we cannot ref the s3 arn, we must address it statically see below link for discussion:
+      # https://stackoverflow.com/questions/47215544/s3-bucket-lambda-event-unable-to-validate-the-following-destination-configurati
+
+  CloudfrontKinesisLambdaIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: CloudfrontKinesisLambdaPolicy
+          PolicyDocument:
+            Statement:
+              - Sid: LambdaLogging
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - 'arn:aws:logs:*:*:*'
+              - Sid: S3
+                Action:
+                  - 's3:GetObject'
+                Effect: Allow
+                Resource: '*'
+              - Sid: STS
+                Action:
+                  - "sts:*"
+                Effect: Allow
+                Resource: '*'
+              - Sid: kinesis
+                Action:
+                  - 'kinesis:*'
+                Effect: Allow
+                Resource: '*'
